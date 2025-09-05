@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Whot Game: Single & Multiplayer</title>
+<style>
+body { font-family:'Segoe UI', sans-serif; margin:0; padding:0; background:linear-gradient(to bottom, #0b3d91, #1e3c72); color:#fff; text-align:center; }
+#modeSelect, #setup, #lobby, #game { margin-top:20px; }
+.hand, .discard { display:flex; justify-content:center; margin:10px 0; flex-wrap:wrap; min-height:150px; }
+.card { width:100px; height:140px; margin:5px; border-radius:10px; background:white; color:black; display:flex; flex-direction:column; justify-content:space-between; align-items:center; font-weight:bold; font-size:22px; cursor:pointer; box-shadow:0 5px 10px rgba(0,0,0,0.5); transition:transform 0.3s; position:relative; }
+.card:hover { transform: scale(1.2); z-index:10; }
+.card.red { color:red; } .card.blue { color:blue; } .card.green { color:green; } .card.yellow { color:orange; } .card.black { color:black; }
+.card .top-left, .card .bottom-right { position:absolute; font-size:18px; font-weight:bold; }
+.card .top-left { top:5px; left:5px; } .card .bottom-right { bottom:5px; right:5px; transform: rotate(180deg); }
+.discard .card { cursor: default; transform:none; }
+#playerHand { justify-content:center; }
+#controls { margin:20px; }
+#playersList { list-style:none; padding:0; }
+#chat { margin-top:20px; max-width:400px; margin-left:auto;margin-right:auto; text-align:left; }
+#chatBox { width:100%; height:150px; overflow-y:auto; border:1px solid #ccc; background:#fff; color:#000; padding:5px; border-radius:5px; }
+#chatInput { width:70%; padding:5px; }
+#chatSend { padding:5px 10px; }
+input, button { padding:5px; font-size:16px; margin:2px; }
+.card-counts { margin-top:10px; }
+#drawPile { width:100px; height:140px; border-radius:10px; background:#444; display:inline-block; margin-left:20px; cursor:pointer; box-shadow:0 5px 10px rgba(0,0,0,0.5); }
+</style>
+</head>
+<body>
+<h1>Whot Game</h1>
+
+<div id="modeSelect">
+  <button id="singleBtn">Single Player</button>
+  <button id="multiBtn">Multiplayer</button>
+</div>
+
+<div id="setup" style="display:none;">
+  <input type="text" id="playerName" placeholder="Enter Your Name">
+  <button id="hostBtn">Host Game</button>
+  <input type="text" id="peerIdInput" placeholder="Enter Host Code">
+  <button id="connectBtn">Join Game</button>
+  <p>Your Peer ID: <span id="myId">...</span></p>
+</div>
+
+<div id="lobby" style="display:none;">
+  <h2>Lobby</h2>
+  <p>Share this code to join: <span id="gameCode"></span></p>
+  <p>Players in lobby:</p>
+  <ul id="playersList"></ul>
+  <button id="startGameBtn">Start Game (Host Only)</button>
+</div>
+
+<div id="game" style="display:none;">
+  <h2>Discard Pile</h2>
+  <div style="display:flex; justify-content:center; align-items:center;">
+    <div id="discard" class="discard" ondrop="dropCard(event)" ondragover="allowDrop(event)"></div>
+    <div id="drawPile" onclick="drawCard(playerHand)"></div>
+  </div>
+
+  <h2>Your Hand</h2>
+  <div id="playerHand" class="hand"></div>
+  
+  <div class="card-counts">
+    <p>Your Cards: <span id="playerCount">0</span></p>
+  </div>
+
+  <p id="turnInfo"></p>
+
+  <div id="chat" style="display:none;">
+    <h3>Chat</h3>
+    <div id="chatBox"></div>
+    <input type="text" id="chatInput" placeholder="Type a message">
+    <button id="chatSend">Send</button>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.4.7/dist/peerjs.min.js"></script>
+<script>
+let deck=[], discardPile=[], playerHand=[], players=[], currentPlayerIndex=0;
+let isHost=false, myId=null, connections=[], multiplayer=false;
+const suits=['circle','star','cross','triangle'], numbers=[1,2,3,4,5,7,8,10,11,12,13];
+
+document.getElementById('singleBtn').onclick=()=>{
+  multiplayer=false; document.getElementById('modeSelect').style.display='none';
+  document.getElementById('game').style.display='block'; startSinglePlayer();
+};
+document.getElementById('multiBtn').onclick=()=>{
+  multiplayer=true; document.getElementById('modeSelect').style.display='none';
+  document.getElementById('setup').style.display='block'; initPeer();
+};
+
+// PeerJS
+function initPeer(){
+  peer = new Peer();
+  peer.on('open', id=>{ myId=id; document.getElementById('myId').innerText=id; });
+}
+
+// Multiplayer
+document.getElementById('hostBtn').onclick=()=>{
+  const name=document.getElementById('playerName').value||'Host';
+  isHost=true; players.push({id:myId, name:name, conn:null});
+  document.getElementById('setup').style.display='none'; document.getElementById('lobby').style.display='block';
+  document.getElementById('gameCode').innerText=myId;
+  peer.on('connection', c=>{
+    connections.push(c);
+    c.on('data', data=>{
+      if(data.action==='join'){ players.push({id:data.playerId, name:data.name, conn:c}); updateLobby(); c.send({action:'joined', players:players.map(p=>({id:p.id,name:p.name}))}); }
+      if(data.action==='chat') broadcastChat(data.msg);
+    }); updateLobby();
+  });
+  updateLobby();
+};
+
+document.getElementById('connectBtn').onclick=()=>{
+  const hostId=document.getElementById('peerIdInput').value; if(!hostId) return alert("Enter host code");
+  const name=document.getElementById('playerName').value||'Player';
+  const conn=peer.connect(hostId);
+  conn.on('open', ()=>{ conn.send({action:'join', playerId:myId, name:name}); });
+  conn.on('data', data=>{
+    if(data.action==='joined'){ players=data.players.map(p=>({id:p.id,name:p.name,conn:conn})); showLobbyWaiting(); }
+    if(data.action==='chat') addChatMessage(data.msg);
+  });
+  document.getElementById('setup').style.display='none';
+};
+
+document.getElementById('startGameBtn').onclick=()=>{
+  if(!isHost) return alert("Only host can start!");
+  document.getElementById('lobby').style.display='none';
+  document.getElementById('game').style.display='block';
+  startGame();
+  broadcastState({action:'start', players:players.map(p=>({id:p.id,name:p.name}))});
+};
+
+function updateLobby(){
+  const list=document.getElementById('playersList'); list.innerHTML='';
+  players.forEach(p=>{ const li=document.createElement('li'); li.innerText=p.name+(p.id===myId?' (You)':''); list.appendChild(li); });
+}
+function showLobbyWaiting(){ document.getElementById('lobby').style.display='block'; updateLobby(); }
+function broadcastState(msg){ if(isHost) connections.forEach(c=>c.send(msg)); }
+function broadcastChat(msg){ if(isHost) connections.forEach(c=>c.send({action:'chat', msg:msg})); addChatMessage(msg); }
+function addChatMessage(msg){ const chatBox=document.getElementById('chatBox'); chatBox.innerHTML+=msg+"<br>"; chatBox.scrollTop=chatBox.scrollHeight; }
+
+// Game functions
+function createDeck(){ deck=[]; for(let s of suits) for(let n of numbers) deck.push({suit:s,num:n}); deck.push({suit:'whot',num:20}); shuffle(deck);}
+function shuffle(arr){for(let i=arr.length-1;i>0;i--){let j=Math.floor(Math.random()*(i+1));[arr[i],arr[j]]=[arr[j],arr[i]];}}
+
+function drawCard(hand,count=1){
+  for(let i=0;i<count;i++){ if(deck.length===0){ alert("Deck empty!"); return; } hand.push(deck.pop()); }
+  renderHands();
+  if(!multiplayer) setTimeout(aiTurn, 500);
+}
+
+document.getElementById('drawPile').onclick=()=>{ if(multiplayer && players[currentPlayerIndex].id!==myId) return; drawCard(playerHand); nextTurn(); }
+
+// Drag & Drop
+function dragCard(event,i){ event.dataTransfer.setData("cardIndex",i); }
+function allowDrop(event){ event.preventDefault(); }
+function dropCard(event){ event.preventDefault(); const i=event.dataTransfer.getData("cardIndex"); playCard(i); }
+
+// Play Card
+function playCard(i){
+  if(multiplayer && players[currentPlayerIndex].id!==myId) return;
+  const card=playerHand[i]; const top=discardPile[discardPile.length-1];
+  if(!top || card.suit==='whot' || card.suit===top.suit || card.num===top.num){
+    discardPile.push(card); playerHand.splice(i,1); nextTurn(); renderHands();
+    if(multiplayer) broadcastState({action:'update', discardPile,currentPlayerIndex});
+    checkWinner();
+  } else alert("Cannot play this card!");
+}
+
+// Next Turn
+function nextTurn(){ currentPlayerIndex=(currentPlayerIndex+1)%players.length; renderHands(); updateTurnInfo(); }
+
+// Start Single Player
+function startSinglePlayer(){
+  players=[{id:'You',name:'You'},{id:'AI1',name:'AI1'},{id:'AI2',name:'AI2'}];
+  createDeck(); playerHand=[]; aiHands=[[],[]];
+  for(let i=0;i<5;i++){ drawCard(playerHand); drawCard(aiHands[0]); drawCard(aiHands[1]); }
+  discardPile.push(deck.pop()); renderHands();
+}
+
+// AI
+let aiHands=[];
+function aiTurn(){
+  const top=discardPile[discardPile.length-1];
+  for(let a=0;a<aiHands.length;a++){
+    let hand=aiHands[a];
+    let idx=hand.findIndex(c=>c.suit==='whot'||c.suit===top.suit||c.num===top.num);
+    if(idx!==-1){ discardPile.push(hand[idx]); hand.splice(idx,1); addChatMessage(players[a+1].name+" played a card"); } else if(deck.length>0){ hand.push(deck.pop()); addChatMessage(players[a+1].name+" drew a card"); }
+  }
+  renderHands(); checkWinner();
+}
+
+// Render Hands
+function renderHands(){
+  const handDiv=document.getElementById('playerHand'); handDiv.innerHTML='';
+  playerHand.forEach((c,i)=>{
+    const div=document.createElement('div'); div.className='card '+getSuitColor(c.suit);
+    div.onclick=()=>{ if(multiplayer && players[currentPlayerIndex].id!==myId) return; playCard(i); };
+    const t=document.createElement('div'); t.className='top-left'; t.innerText=c.suit==='whot'?'WHOT':c.num;
+    const b=document.createElement('div'); b.className='bottom-right'; b.innerText=c.suit==='whot'?'WHOT':c.num;
+    div.appendChild(t); div.appendChild(b);
+    const center=document.createElement('div'); center.style.fontSize='40px'; center.innerHTML=getSuitSymbol(c.suit); div.appendChild(center);
+    handDiv.appendChild(div);
+  });
+
+  const discardDiv=document.getElementById('discard'); discardDiv.innerHTML='';
+  if(discardPile.length>0){
+    const top=discardPile[discardPile.length-1];
+    const div=document.createElement('div'); div.className='card '+getSuitColor(top.suit);
+    const t=document.createElement('div'); t.className='top-left'; t.innerText=top.suit==='whot'?'WHOT':top.num;
+    const b=document.createElement('div'); b.className='bottom-right'; b.innerText=top.suit==='whot'?'WHOT':top.num;
+    div.appendChild(t); div.appendChild(b);
+    const center=document.createElement('div'); center.style.fontSize='40px'; center.innerHTML=getSuitSymbol(top.suit); div.appendChild(center);
+    discardDiv.appendChild(div);
+  }
+
+  document.getElementById('playerCount').innerText=playerHand.length;
+}
+
+// Helpers
+function getSuitColor(suit){ switch(suit){ case 'circle':return'red'; case 'star':return'blue'; case 'cross':return'green'; case 'triangle':return'yellow'; case 'whot':return'black'; } }
+function getSuitSymbol(suit){ switch(suit){ case 'circle':return'●'; case 'star':return'★'; case 'cross':return'✚'; case 'triangle':return'▲'; case 'whot':return'❖'; } }
+
+// Winner Check
+function checkWinner(){
+  if(playerHand.length===0){ alert("You Won!"); resetGame(); return; }
+  if(multiplayer) players.slice(1).forEach(p=>{ if(p.hand && p.hand.length===0){ alert(p.name+" Won!"); resetGame(); } });
+}
+
+function resetGame(){ deck=[]; discardPile=[]; playerHand=[]; currentPlayerIndex=0; document.getElementById('game').style.display='none'; document.getElementById('modeSelect').style.display='block'; }
+
+// Turn Info
+function updateTurnInfo(){ if(multiplayer) document.getElementById('turnInfo').innerText=`Current Turn: ${players[currentPlayerIndex].name}${players[currentPlayerIndex].id===myId?' (You)':''}`; }
+</script>
+</body>
+</html>
