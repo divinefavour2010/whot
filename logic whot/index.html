@@ -3,13 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Whot Game: Single & Multiplayer</title>
+<title>Whot Game - Live Multiplayer (PeerJS)</title>
 <style>
 body { font-family:'Segoe UI', sans-serif; margin:0; padding:0; background:linear-gradient(to bottom, #0b3d91, #1e3c72); color:#fff; text-align:center; }
 #modeSelect, #setup, #lobby, #game { margin-top:20px; }
 .hand, .discard { display:flex; justify-content:center; margin:10px 0; flex-wrap:wrap; min-height:150px; }
-.card { width:100px; height:140px; margin:5px; border-radius:10px; background:white; color:black; display:flex; flex-direction:column; justify-content:space-between; align-items:center; font-weight:bold; font-size:22px; cursor:pointer; box-shadow:0 5px 10px rgba(0,0,0,0.5); transition:transform 0.3s; position:relative; }
-.card:hover { transform: scale(1.2); z-index:10; }
+.card { width:100px; height:140px; margin:5px; border-radius:10px; background:white; color:black; display:flex; flex-direction:column; justify-content:space-between; align-items:center; font-weight:bold; font-size:22px; cursor:pointer; box-shadow:0 5px 10px rgba(0,0,0,0.5); transition:transform 0.12s; position:relative; }
+.card:hover { transform: scale(1.08); z-index:10; }
 .card.red { color:red; } .card.blue { color:blue; } .card.green { color:green; } .card.yellow { color:orange; } .card.black { color:black; }
 .card .top-left, .card .bottom-right { position:absolute; font-size:18px; font-weight:bold; }
 .card .top-left { top:5px; left:5px; } .card .bottom-right { bottom:5px; right:5px; transform: rotate(180deg); }
@@ -24,6 +24,11 @@ body { font-family:'Segoe UI', sans-serif; margin:0; padding:0; background:linea
 input, button { padding:5px; font-size:16px; margin:2px; }
 .card-counts { margin-top:10px; }
 #drawPile { width:100px; height:140px; border-radius:10px; background:#444; display:inline-block; margin-left:20px; cursor:pointer; box-shadow:0 5px 10px rgba(0,0,0,0.5); }
+.opponentHand { font-weight:bold; font-size:16px; color:#fff; margin:6px 0; }
+.footer-note { font-size:13px; color: #ddd; margin-top:10px; }
+.container-row { display:flex; justify-content:center; gap:20px; flex-wrap:wrap; align-items:flex-start; }
+.opponentPreview { display:flex; gap:6px; justify-content:center; align-items:center; margin:8px 0; }
+.backCard { width:60px; height:90px; border-radius:6px; background:#222; box-shadow:0 3px 6px rgba(0,0,0,0.4); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:bold; }
 </style>
 </head>
 <body>
@@ -51,22 +56,30 @@ input, button { padding:5px; font-size:16px; margin:2px; }
 </div>
 
 <div id="game" style="display:none;">
-  <h2>Discard Pile</h2>
-  <div style="display:flex; justify-content:center; align-items:center;">
-    <div id="discard" class="discard" ondrop="dropCard(event)" ondragover="allowDrop(event)"></div>
-    <div id="drawPile" onclick="drawCard(playerHand)"></div>
+  <div class="container-row">
+    <div>
+      <h2>Discard Pile</h2>
+      <div style="display:flex; justify-content:center; align-items:center;">
+        <div id="discard" class="discard" ondrop="dropCard(event)" ondragover="allowDrop(event)"></div>
+        <div id="drawPile" onclick="drawCard(null)" title="Draw card (click)"></div>
+      </div>
+    </div>
+
+    <div style="min-width:220px;">
+      <h2>Your Hand</h2>
+      <div id="playerHand" class="hand"></div>
+      <div class="card-counts"><p>Your Cards: <span id="playerCount">0</span></p></div>
+      <p id="turnInfo"></p>
+    </div>
+
+    <div style="min-width:220px;">
+      <h3>Opponents</h3>
+      <div id="opponentsArea"></div>
+      <div class="footer-note">Opponent previews show counts and a small card back preview.</div>
+    </div>
   </div>
 
-  <h2>Your Hand</h2>
-  <div id="playerHand" class="hand"></div>
-  
-  <div class="card-counts">
-    <p>Your Cards: <span id="playerCount">0</span></p>
-  </div>
-
-  <p id="turnInfo"></p>
-
-  <div id="chat" style="display:none;">
+  <div id="chat" style="margin-top:18px;">
     <h3>Chat</h3>
     <div id="chatBox"></div>
     <input type="text" id="chatInput" placeholder="Type a message">
@@ -76,196 +89,431 @@ input, button { padding:5px; font-size:16px; margin:2px; }
 
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.4.7/dist/peerjs.min.js"></script>
 <script>
-let deck=[], discardPile=[], playerHand=[], players=[], currentPlayerIndex=0;
-let isHost=false, myId=null, connections=[], multiplayer=false;
-const suits=['circle','star','cross','triangle'], numbers=[1,2,3,4,5,7,8,10,11,12,13];
+/* Live multiplayer Whot using PeerJS
+   How to preview:
+   1) Save this file locally and open in browser (needs internet for PeerJS).
+   2) Click "Multiplayer" -> "Host Game". Copy "Your Peer ID" and share with opponent.
+   3) Opponent opens same file, "Multiplayer" -> paste host ID -> "Join Game".
+   4) Host clicks "Start Game". Play cards by clicking them.
+*/
+
+let deck = [], discardPile = [], playerHand = [], players = [], currentPlayerIndex = 0;
+let isHost = false, myId = null, peer = null, connections = [], hostConn = null, multiplayer = false;
+const suits = ['circle','star','cross','triangle'], numbers = [1,2,3,4,5,7,8,10,11,12,13];
 
 // Mode selection
-document.getElementById('singleBtn').onclick=()=>{
-  multiplayer=false; document.getElementById('modeSelect').style.display='none';
-  document.getElementById('game').style.display='block'; startSinglePlayer();
+document.getElementById('singleBtn').onclick = () => {
+  multiplayer = false; document.getElementById('modeSelect').style.display = 'none';
+  document.getElementById('game').style.display = 'block'; startSinglePlayer();
 };
-document.getElementById('multiBtn').onclick=()=>{
-  multiplayer=true; document.getElementById('modeSelect').style.display='none';
-  document.getElementById('setup').style.display='block'; initPeer();
+document.getElementById('multiBtn').onclick = () => {
+  multiplayer = true; document.getElementById('modeSelect').style.display = 'none';
+  document.getElementById('setup').style.display = 'block'; initPeer();
 };
 
-// PeerJS
+// PeerJS init
 function initPeer(){
   peer = new Peer();
-  peer.on('open', id=>{ myId=id; document.getElementById('myId').innerText=id; });
+  peer.on('open', id => {
+    myId = id;
+    document.getElementById('myId').innerText = id;
+  });
+  peer.on('error', err => {
+    console.error('Peer error', err);
+    alert('PeerJS error: '+(err && err.message ? err.message : err));
+  });
 }
 
-// Multiplayer
-document.getElementById('hostBtn').onclick=()=>{
-  const name=document.getElementById('playerName').value||'Host';
-  isHost=true; players.push({id:myId, name:name, conn:null});
-  document.getElementById('setup').style.display='none'; document.getElementById('lobby').style.display='block';
-  document.getElementById('gameCode').innerText=myId;
-  peer.on('connection', c=>{
+// Host flow: accept connections & messages
+document.getElementById('hostBtn').onclick = () => {
+  const name = document.getElementById('playerName').value || 'Host';
+  if (!peer) initPeer();
+  isHost = true;
+  players = [{ id: myId, name: name, conn: null, hand: [] }];
+  document.getElementById('setup').style.display = 'none';
+  document.getElementById('lobby').style.display = 'block';
+  document.getElementById('gameCode').innerText = myId;
+
+  peer.on('connection', c => {
     connections.push(c);
-    c.on('data', data=>{
-      if(data.action==='join'){ 
-        players.push({id:data.playerId, name:data.name, conn:c}); 
-        updateLobby(); 
-        c.send({action:'joined', players:players.map(p=>({id:p.id,name:p.name}))}); 
-      }
-      if(data.action==='chat') broadcastChat(data.msg);
-      if(data.action==='start'){ startMultiplayerGame(data); }
+    c.on('open', () => {
+      console.log('client connected', c.peer);
     });
-    updateLobby();
+    c.on('data', data => handleClientMessage(c, data));
+    c.on('close', () => {
+      // remove player
+      players = players.filter(p => p.conn !== c);
+      connections = connections.filter(x => x !== c);
+      updateLobby();
+      broadcastState(); // update others
+    });
   });
   updateLobby();
 };
 
-document.getElementById('connectBtn').onclick=()=>{
-  const hostId=document.getElementById('peerIdInput').value; if(!hostId) return alert("Enter host code");
-  const name=document.getElementById('playerName').value||'Player';
-  const conn=peer.connect(hostId);
-  conn.on('open', ()=>{ conn.send({action:'join', playerId:myId, name:name}); });
-  conn.on('data', data=>{
-    if(data.action==='joined'){ players=data.players.map(p=>({id:p.id,name:p.name,conn:conn})); showLobbyWaiting(); }
-    if(data.action==='chat') addChatMessage(data.msg);
-    if(data.action==='start'){ startMultiplayerGame(data); }
+// Client connect to host
+document.getElementById('connectBtn').onclick = () => {
+  const hostId = document.getElementById('peerIdInput').value.trim();
+  if(!hostId) return alert('Enter host code');
+  const name = document.getElementById('playerName').value || 'Player';
+  if (!peer) initPeer();
+  const conn = peer.connect(hostId);
+  hostConn = conn;
+  conn.on('open', () => {
+    conn.send({ action:'join', playerId: myId, name: name });
   });
-  document.getElementById('setup').style.display='none';
+  conn.on('data', data => handleServerMessage(data));
+  conn.on('close', () => { alert('Disconnected from host'); });
+  document.getElementById('setup').style.display = 'none';
 };
 
 // Host starts game
 document.getElementById('startGameBtn').onclick = () => {
-  if (!isHost) return alert("Only host can start!");
-
-  // Deal deck and hands
+  if (!isHost) return alert('Only host can start');
   createDeck();
-  players.forEach(p => {
-    p.hand = [];
-    for (let i = 0; i < 5; i++) {
-      p.hand.push(deck.pop());
-    }
-  });
-  discardPile.push(deck.pop());
+  // deal 5 cards to every player in players[]
+  players.forEach(p => { p.hand = []; for(let i=0;i<5;i++) p.hand.push(deck.pop()); });
+  discardPile = []; discardPile.push(deck.pop());
   currentPlayerIndex = 0;
-
-  // Show game for host
   document.getElementById('lobby').style.display = 'none';
   document.getElementById('game').style.display = 'block';
+  // set local playerHand for host
   playerHand = players.find(p=>p.id===myId).hand;
   renderHands();
   updateTurnInfo();
-
-  // Broadcast start to all clients
+  // send start to each client (include hands so clients render)
   connections.forEach(conn => {
-    conn.send({
-      action: 'start',
-      deck: deck,
-      discardPile: discardPile,
-      players: players.map(p => ({ id: p.id, name: p.name, hand: p.hand })),
-      currentPlayerIndex
-    });
+    conn.send({ action:'start', deck, discardPile, players: players.map(p=>({id:p.id,name:p.name,hand:p.hand})), currentPlayerIndex });
   });
 };
 
-// Start multiplayer on clients
-function startMultiplayerGame(data){
-  deck = data.deck;
-  discardPile = data.discardPile;
-  players = data.players.map(p => ({ id: p.id, name: p.name, hand: p.hand }));
-  currentPlayerIndex = data.currentPlayerIndex;
-  playerHand = players.find(p=>p.id===myId).hand;
+// Handle messages from a client (host side)
+function handleClientMessage(conn, data){
+  if(!data || !data.action) return;
+  if(data.action === 'join'){
+    // add player
+    players.push({ id: data.playerId, name: data.name, conn: conn, hand: [] });
+    updateLobby();
+    // reply with full joined list
+    conn.send({ action:'joined', players: players.map(p=>({id:p.id, name:p.name})) });
+    // notify other clients about new player
+    connections.forEach(c => { if(c !== conn) c.send({ action:'joined', players: players.map(p=>({id:p.id,name:p.name})) }); });
+    console.log('player joined', data.name);
+  } else if(data.action === 'playCard'){
+    // data.card contains suit,num; data.playerId
+    handleClientPlayCard(data);
+  } else if(data.action === 'drawCard'){
+    handleClientDrawCard(data);
+  } else if(data.action === 'chat'){
+    // rebroadcast chat
+    broadcastChat(data.msg, data.from || data.playerId);
+  }
+}
 
-  document.getElementById('lobby').style.display='none';
-  document.getElementById('game').style.display='block';
+// Client: handle messages from server/host
+function handleServerMessage(data){
+  if(!data || !data.action) return;
+  if(data.action === 'joined'){
+    players = data.players.map(p=>({id:p.id, name:p.name, conn: null, hand: []}));
+    updateLobby();
+    showLobbyWaiting();
+  } else if(data.action === 'start'){
+    // full start: set deck/discard/players and hands
+    startMultiplayerGame(data);
+  } else if(data.action === 'state'){
+    // updated state broadcast
+    applyStateFromHost(data);
+  } else if(data.action === 'chat'){
+    addChatMessage(data.msg);
+  } else if(data.action === 'joined_update'){
+    players = data.players.map(p=>({id:p.id,name:p.name,conn:null,hand:[]}));
+    updateLobby();
+  }
+}
+
+// Broadcast full state from host to clients
+function broadcastState(){
+  if(!isHost) return;
+  const payload = { action:'state', deck, discardPile, players: players.map(p=>({id:p.id,name:p.name,hand:p.hand})), currentPlayerIndex };
+  connections.forEach(c => c.send(payload));
+}
+
+// Apply state received from host (client side)
+function applyStateFromHost(data){
+  deck = data.deck || deck;
+  discardPile = data.discardPile || discardPile;
+  players = data.players.map(p=>({id:p.id, name:p.name, conn: null, hand:p.hand || []}));
+  currentPlayerIndex = typeof data.currentPlayerIndex === 'number' ? data.currentPlayerIndex : currentPlayerIndex;
+  const me = players.find(p=>p.id===myId);
+  playerHand = me ? me.hand : [];
   renderHands();
   updateTurnInfo();
 }
 
-// Lobby
-function updateLobby(){
-  const list=document.getElementById('playersList'); list.innerHTML='';
-  players.forEach(p=>{ const li=document.createElement('li'); li.innerText=p.name+(p.id===myId?' (You)':''); list.appendChild(li); });
+// Host handling client's play request
+function handleClientPlayCard(data){
+  const player = players.find(p=>p.id === data.playerId);
+  if(!player) return;
+  // find card in player's hand by suit & num
+  const idx = player.hand.findIndex(c => c.suit === data.card.suit && c.num === data.card.num);
+  if(idx === -1) return;
+  const top = discardPile[discardPile.length-1];
+  if(!top || player.hand[idx].suit === 'whot' || player.hand[idx].suit === top.suit || player.hand[idx].num === top.num){
+    const card = player.hand.splice(idx,1)[0];
+    discardPile.push(card);
+    // advance turn to next player in players[] order
+    const playerIndex = players.findIndex(p => p.id === player.id);
+    currentPlayerIndex = (playerIndex + 1) % players.length;
+    broadcastState();
+    renderHands();
+    updateTurnInfo();
+    checkWinner();
+  } else {
+    // invalid move - (could send error)
+  }
 }
-function showLobbyWaiting(){ document.getElementById('lobby').style.display='block'; updateLobby(); }
-function broadcastState(msg){ if(isHost) connections.forEach(c=>c.send(msg)); }
-function broadcastChat(msg){ if(isHost) connections.forEach(c=>c.send({action:'chat', msg:msg})); addChatMessage(msg); }
-function addChatMessage(msg){ const chatBox=document.getElementById('chatBox'); chatBox.innerHTML+=msg+"<br>"; chatBox.scrollTop=chatBox.scrollHeight; }
 
-// Game functions
-function createDeck(){ deck=[]; for(let s of suits) for(let n of numbers) deck.push({suit:s,num:n}); deck.push({suit:'whot',num:20}); shuffle(deck);}
-function shuffle(arr){for(let i=arr.length-1;i>0;i--){let j=Math.floor(Math.random()*(i+1));[arr[i],arr[j]]=[arr[j],arr[i]];}}
+// Host handling client's draw request
+function handleClientDrawCard(data){
+  const player = players.find(p=>p.id === data.playerId);
+  if(!player) return;
+  for(let i=0;i<(data.count||1);i++){
+    if(deck.length===0) break;
+    player.hand.push(deck.pop());
+  }
+  broadcastState();
+  renderHands();
+  updateTurnInfo();
+}
 
-function drawCard(hand,count=1){
-  for(let i=0;i<count;i++){ if(deck.length===0){ alert("Deck empty!"); return; } hand.push(deck.pop()); }
+// Send message to host (client side)
+function sendToHost(msg){
+  if(hostConn && hostConn.open) hostConn.send(msg);
+  else alert('Not connected to host.');
+}
+
+// Chat
+document.getElementById('chatSend').onclick = () => {
+  const txt = document.getElementById('chatInput').value.trim();
+  if(!txt) return;
+  if(isHost){
+    // host adds and broadcasts
+    broadcastChat(txt, players.find(p=>p.id===myId).name);
+  } else {
+    sendToHost({ action:'chat', msg: txt, from: document.getElementById('playerName').value || myId, playerId: myId });
+  }
+  document.getElementById('chatInput').value = '';
+};
+function broadcastChat(msg, from){
+  // host rebroadcasts to all clients and shows locally
+  if(isHost){
+    connections.forEach(c=>c.send({ action:'chat', msg: (from?from+': ':'') + msg }));
+    addChatMessage((from?from+': ':'') + msg);
+  } else {
+    addChatMessage((from?from+': ':'') + msg);
+  }
+}
+function addChatMessage(msg){
+  const cb = document.getElementById('chatBox');
+  cb.innerHTML += msg + '<br>';
+  cb.scrollTop = cb.scrollHeight;
+}
+
+// Deck & shuffle
+function createDeck(){ deck=[]; for(let s of suits) for(let n of numbers) deck.push({suit:s,num:n}); deck.push({suit:'whot',num:20}); shuffle(deck); }
+function shuffle(arr){ for(let i=arr.length-1;i>0;i--){ let j=Math.floor(Math.random()*(i+1)); [arr[i],arr[j]]=[arr[j],arr[i]]; } }
+
+// Draw card (UI)
+function drawCard(origHand, count=1){
+  if(!multiplayer){
+    // local singleplayer draw
+    for(let i=0;i<count;i++){ if(deck.length===0){ alert('Deck empty!'); return; } (origHand||playerHand).push(deck.pop()); }
+    renderHands();
+    return;
+  }
+  // multiplayer: only current player can draw
+  if(players[currentPlayerIndex].id !== myId) return alert('Not your turn to draw.');
+  if(isHost){
+    // host draws for themselves
+    const me = players.find(p=>p.id===myId);
+    for(let i=0;i<count;i++){ if(deck.length===0) break; me.hand.push(deck.pop()); }
+    broadcastState();
+    renderHands();
+    updateTurnInfo();
+  } else {
+    // client requests host to draw
+    sendToHost({ action:'drawCard', playerId: myId, count });
+  }
+}
+
+// Play card (UI)
+function playCard(i){
+  if(!multiplayer){
+    // local singleplayer logic (client had playerHand variable)
+    const card = playerHand[i];
+    const top = discardPile[discardPile.length-1];
+    if(!top || card.suit === 'whot' || card.suit === top.suit || card.num === top.num){
+      discardPile.push(card);
+      playerHand.splice(i,1);
+      nextTurn();
+      renderHands();
+      checkWinner();
+    } else alert('Cannot play this card!');
+    return;
+  }
+
+  // multiplayer
+  if(players[currentPlayerIndex].id !== myId) return alert('Not your turn.');
+  if(isHost){
+    // host plays directly
+    hostPlay(i);
+  } else {
+    // client sends request to host (include the card data)
+    const card = playerHand[i];
+    sendToHost({ action:'playCard', playerId: myId, card });
+    // wait for host to broadcast updated state
+  }
+}
+
+// Host play processing
+function hostPlay(i){
+  const me = players.find(p=>p.id===myId);
+  if(!me) return;
+  const card = me.hand[i];
+  const top = discardPile[discardPile.length-1];
+  if(!top || card.suit === 'whot' || card.suit === top.suit || card.num === top.num){
+    me.hand.splice(i,1);
+    discardPile.push(card);
+    const myIndex = players.findIndex(p=>p.id===myId);
+    currentPlayerIndex = (myIndex + 1) % players.length;
+    broadcastState();
+    renderHands(); updateTurnInfo(); checkWinner();
+  } else alert('Cannot play this card!');
+}
+
+// Next turn for local singleplayer case (keeps same signature)
+function nextTurn(){ currentPlayerIndex = (currentPlayerIndex+1) % players.length; renderHands(); updateTurnInfo(); }
+
+// Single player start (keeps as before)
+function startSinglePlayer(){
+  players=[{id:'You',name:'You'},{id:'AI1',name:'AI1'},{id:'AI2',name:'AI2'}];
+  createDeck(); playerHand=[]; for(let i=0;i<5;i++){ drawCard(playerHand); }
+  // simple AI hands placeholder
+  players[1].hand = []; players[2].hand = [];
+  for(let i=0;i<5;i++){ players[1].hand.push(deck.pop()); players[2].hand.push(deck.pop()); }
+  discardPile = []; discardPile.push(deck.pop());
   renderHands();
 }
 
-// Drag & Drop
-function dragCard(event,i){ event.dataTransfer.setData("cardIndex",i); }
-function allowDrop(event){ event.preventDefault(); }
-function dropCard(event){ event.preventDefault(); const i=event.dataTransfer.getData("cardIndex"); playCard(i); }
-
-// Play Card
-function playCard(i){
-  if(multiplayer && players[currentPlayerIndex].id!==myId) return;
-  const card=playerHand[i]; const top=discardPile[discardPile.length-1];
-  if(!top || card.suit==='whot' || card.suit===top.suit || card.num===top.num){
-    discardPile.push(card); playerHand.splice(i,1); nextTurn(); renderHands();
-    if(multiplayer) broadcastState({action:'update', discardPile,currentPlayerIndex});
-    checkWinner();
-  } else alert("Cannot play this card!");
+// Start multiplayer game on client when host sends "start"
+function startMultiplayerGame(data){
+  deck = data.deck || deck;
+  discardPile = data.discardPile || discardPile;
+  players = data.players.map(p=>({ id:p.id, name:p.name, conn: null, hand: p.hand || [] }));
+  currentPlayerIndex = data.currentPlayerIndex || 0;
+  // set local player hand
+  const me = players.find(p=>p.id===myId);
+  playerHand = me ? me.hand : [];
+  document.getElementById('lobby').style.display = 'none';
+  document.getElementById('game').style.display = 'block';
+  renderHands();
+  updateTurnInfo();
 }
 
-// Next Turn
-function nextTurn(){ currentPlayerIndex=(currentPlayerIndex+1)%players.length; renderHands(); updateTurnInfo(); }
-
-// Start Single Player
-function startSinglePlayer(){
-  players=[{id:'You',name:'You'},{id:'AI1',name:'AI1'},{id:'AI2',name:'AI2'}];
-  createDeck(); playerHand=[]; aiHands=[[],[]];
-  for(let i=0;i<5;i++){ drawCard(playerHand); drawCard(aiHands[0]); drawCard(aiHands[1]); }
-  discardPile.push(deck.pop()); renderHands();
-}
-
-// Render Hands
+// Rendering
 function renderHands(){
-  const handDiv=document.getElementById('playerHand'); handDiv.innerHTML='';
+  const handDiv = document.getElementById('playerHand'); handDiv.innerHTML = '';
   playerHand.forEach((c,i)=>{
-    const div=document.createElement('div'); div.className='card '+getSuitColor(c.suit);
-    div.onclick=()=>{ if(multiplayer && players[currentPlayerIndex].id!==myId) return; playCard(i); };
-    const t=document.createElement('div'); t.className='top-left'; t.innerText=c.suit==='whot'?'WHOT':c.num;
-    const b=document.createElement('div'); b.className='bottom-right'; b.innerText=c.suit==='whot'?'WHOT':c.num;
+    const div = document.createElement('div'); div.className = 'card ' + getSuitColor(c.suit);
+    div.setAttribute('draggable','true');
+    div.ondragstart = (e)=> dragCard(e,i);
+    div.onclick = ()=> playCard(i);
+    const t = document.createElement('div'); t.className='top-left'; t.innerText = c.suit==='whot' ? 'WHOT' : c.num;
+    const b = document.createElement('div'); b.className='bottom-right'; b.innerText = c.suit==='whot' ? 'WHOT' : c.num;
     div.appendChild(t); div.appendChild(b);
-    const center=document.createElement('div'); center.style.fontSize='40px'; center.innerHTML=getSuitSymbol(c.suit); div.appendChild(center);
+    const center = document.createElement('div'); center.style.fontSize='40px'; center.innerHTML = getSuitSymbol(c.suit);
+    div.appendChild(center);
     handDiv.appendChild(div);
   });
 
-  const discardDiv=document.getElementById('discard'); discardDiv.innerHTML='';
+  const discardDiv = document.getElementById('discard'); discardDiv.innerHTML = '';
   if(discardPile.length>0){
-    const top=discardPile[discardPile.length-1];
-    const div=document.createElement('div'); div.className='card '+getSuitColor(top.suit);
-    const t=document.createElement('div'); t.className='top-left'; t.innerText=top.suit==='whot'?'WHOT':top.num;
-    const b=document.createElement('div'); b.className='bottom-right'; b.innerText=top.suit==='whot'?'WHOT':top.num;
+    const top = discardPile[discardPile.length-1];
+    const div = document.createElement('div'); div.className = 'card ' + getSuitColor(top.suit);
+    const t = document.createElement('div'); t.className='top-left'; t.innerText = top.suit==='whot' ? 'WHOT' : top.num;
+    const b = document.createElement('div'); b.className='bottom-right'; b.innerText = top.suit==='whot' ? 'WHOT' : top.num;
     div.appendChild(t); div.appendChild(b);
-    const center=document.createElement('div'); center.style.fontSize='40px'; center.innerHTML=getSuitSymbol(top.suit); div.appendChild(center);
+    const center = document.createElement('div'); center.style.fontSize='40px'; center.innerHTML = getSuitSymbol(top.suit);
+    div.appendChild(center);
     discardDiv.appendChild(div);
   }
 
-  document.getElementById('playerCount').innerText=playerHand.length;
+  document.getElementById('playerCount').innerText = playerHand.length;
+  renderOpponentHands();
+}
+
+// Opponents preview (counts + small backs)
+function renderOpponentHands(){
+  const area = document.getElementById('opponentsArea'); area.innerHTML = '';
+  if(!multiplayer) return;
+  players.forEach(p=>{
+    if(p.id === myId) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'opponentHand';
+    const title = document.createElement('div'); title.innerText = `${p.name}: ${p.hand ? p.hand.length : 0} card(s)`;
+    title.style.marginBottom = '6px';
+    wrap.appendChild(title);
+    // show up to 4 back cards as preview
+    const preview = document.createElement('div'); preview.className='opponentPreview';
+    const count = Math.min(4, (p.hand? p.hand.length : 0));
+    for(let i=0;i<count;i++){
+      const bc = document.createElement('div'); bc.className='backCard'; bc.innerText='?';
+      preview.appendChild(bc);
+    }
+    wrap.appendChild(preview);
+    area.appendChild(wrap);
+  });
 }
 
 // Helpers
 function getSuitColor(suit){ switch(suit){ case 'circle':return'red'; case 'star':return'blue'; case 'cross':return'green'; case 'triangle':return'yellow'; case 'whot':return'black'; } }
 function getSuitSymbol(suit){ switch(suit){ case 'circle':return'●'; case 'star':return'★'; case 'cross':return'✚'; case 'triangle':return'▲'; case 'whot':return'❖'; } }
 
-// Winner Check
+// Winner check
 function checkWinner(){
-  if(playerHand.length===0){ alert("You Won!"); resetGame(); return; }
-  if(multiplayer) players.slice(1).forEach(p=>{ if(p.hand && p.hand.length===0){ alert(p.name+" Won!"); resetGame(); } });
+  if(!multiplayer){
+    if(playerHand.length===0){ alert('You Won!'); resetGame(); }
+    return;
+  }
+  players.forEach(p => { if(p.hand && p.hand.length === 0) { alert(p.name + ' won!'); resetGame(); } });
 }
 
-function resetGame(){ deck=[]; discardPile=[]; playerHand=[]; currentPlayerIndex=0; document.getElementById('game').style.display='none'; document.getElementById('modeSelect').style.display='block'; }
+// Reset
+function resetGame(){ deck=[]; discardPile=[]; playerHand=[]; players=[]; currentPlayerIndex = 0; document.getElementById('game').style.display='none'; document.getElementById('modeSelect').style.display='block'; }
 
-// Turn Info
-function updateTurnInfo(){ if(multiplayer) document.getElementById('turnInfo').innerText=`Current Turn: ${players[currentPlayerIndex].name}${players[currentPlayerIndex].id===myId?' (You)':''}`; }
+// Turn info
+function updateTurnInfo(){ if(multiplayer) document.getElementById('turnInfo').innerText = `Current Turn: ${players[currentPlayerIndex] ? players[currentPlayerIndex].name : '...'}${players[currentPlayerIndex] && players[currentPlayerIndex].id===myId ? ' (You)' : ''}`; }
+
+// Drag & Drop helpers
+function dragCard(event,i){ event.dataTransfer.setData('cardIndex', i); }
+function allowDrop(event){ event.preventDefault(); }
+function dropCard(event){ event.preventDefault(); const i = event.dataTransfer.getData('cardIndex'); playCard(parseInt(i)); }
+
+// Lobby helpers
+function updateLobby(){ const list = document.getElementById('playersList'); list.innerHTML=''; players.forEach(p => { const li = document.createElement('li'); li.innerText = p.name + (p.id===myId ? ' (You)' : ''); list.appendChild(li); }); }
+function showLobbyWaiting(){ document.getElementById('lobby').style.display='block'; updateLobby(); }
+
+// Utility: find connection object by player id (host side)
+function connectionByPlayerId(id){
+  const player = players.find(p => p.id===id);
+  return player ? player.conn : null;
+}
+
+// Also expose a simple state broadcast for host to reuse
+function broadcastStateMinimal(){ broadcastState(); }
+
+// Small helper to log to console and UI
+console.log('Whot live multiplayer script loaded.');
 
 </script>
 </body>
